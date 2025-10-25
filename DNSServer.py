@@ -114,7 +114,7 @@ def run_dns_server():
     # NOTE: binding to port 53 usually requires elevated privileges (sudo) on many systems.
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     bind_ip = '127.0.0.1'  # local testing IP (loopback)
-    bind_port = 5353  # standard DNS port; use a higher port if you don't run as root
+    bind_port = 53  # standard DNS port; use a higher port if you don't run as root
     try:
         server_socket.bind((bind_ip, bind_port))
     except PermissionError:
