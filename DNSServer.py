@@ -1,3 +1,4 @@
+# DNSServer.py
 import dns.message
 import dns.rdatatype
 import dns.rdataclass
@@ -6,6 +7,7 @@ import dns.rdtypes.ANY
 from dns.rdtypes.ANY.MX import MX
 from dns.rdtypes.ANY.SOA import SOA
 import dns.rdata
+import dns.rrset
 import socket
 import threading
 import signal
@@ -30,32 +32,37 @@ def generate_aes_key(password, salt):
     key = base64.urlsafe_b64encode(key)
     return key
 
-# Lookup details on fernet in the cryptography.io documentation    
+# Lookup details on fernet in the cryptography.io documentation
 def encrypt_with_aes(input_string, password, salt):
+    # Generate key from password & salt
     key = generate_aes_key(password, salt)
     f = Fernet(key)
-    encrypted_data = f.encrypt(input_string.encode('utf-8'))
+    encrypted_data = f.encrypt(input_string.encode('utf-8'))  # returns bytes
     return encrypted_data
 
 def decrypt_with_aes(encrypted_data, password, salt):
-    # ensure Fernet.decrypt receives bytes
+    # encrypted_data may be bytes or a utf-8 string; ensure bytes
     if isinstance(encrypted_data, str):
-        encrypted_data = encrypted_data.encode('utf-8')
+        encrypted_bytes = encrypted_data.encode('utf-8')
+    else:
+        encrypted_bytes = encrypted_data
     key = generate_aes_key(password, salt)
     f = Fernet(key)
-    decrypted_data = f.decrypt(encrypted_data)
+    decrypted_data = f.decrypt(encrypted_bytes)
     return decrypted_data.decode('utf-8')
 
-
-# Prepare encryption parameters
-salt = b'Tandon'  # Remember it should be a byte-object
-password = "mg8210@nyu.edu"  # <-- REPLACE with your NYU email used in Gradescope
+# --- Encryption parameters (change PASSWORD to your NYU Gradescope email) ---
+salt = b'Tandon'  # must be a byte-object
+password = 'mg8210@nyu.edu'  # <-- REPLACE this with your NYU email registered in Gradescope
 input_string = "AlwaysWatching"
 
-encrypted_value = encrypt_with_aes(input_string, password, salt) # exfil function
-# decrypted_value = decrypt_with_aes(encrypted_value, password, salt)  # exfil function
+# produce encrypted_value and decrypted_value (decrypted_value only for local test)
+encrypted_value = encrypt_with_aes(input_string, password, salt)  # bytes
+# For storing in a DNS TXT record we cast to string (utf-8). Keep the encrypted package itself unchanged.
+encrypted_value_str = encrypted_value.decode('utf-8')
+# decrypted_value = decrypt_with_aes(encrypted_value, password, salt)  # can be used for testing locally
 
-# For future use    
+# For future use
 def generate_sha256_hash(input_string):
     sha256_hash = hashlib.sha256()
     sha256_hash.update(input_string.encode('utf-8'))
@@ -66,50 +73,58 @@ dns_records = {
     'example.com.': {
         dns.rdatatype.A: '192.168.1.101',
         dns.rdatatype.AAAA: '2001:0db8:85a3:0000:0000:8a2e:0370:7334',
-        dns.rdatatype.MX: [(10, 'mail.example.com.')],  # List of (preference, mail server) tuples
+        dns.rdatatype.MX: [(10, 'mail.example.com.')],
         dns.rdatatype.CNAME: 'www.example.com.',
         dns.rdatatype.NS: 'ns.example.com.',
         dns.rdatatype.TXT: ('This is a TXT record',),
         dns.rdatatype.SOA: (
-            'ns1.example.com.', #mname
-            'admin.example.com.', #rname
-            2023081401, #serial
-            3600, #refresh
-            1800, #retry
-            604800, #expire
-            86400, #minimum
+            'ns1.example.com.',  # mname
+            'admin.example.com.',  # rname
+            2023081401,  # serial
+            3600,  # refresh
+            1800,  # retry
+            604800,  # expire
+            86400,  # minimum
         ),
     },
-
-    # Assignment required records (use FQDNs ending with a dot)
+    # The required records from the assignment (FQDNs must end with a dot)
     'safebank.com.': {
-        dns.rdatatype.A: '192.168.1.102'
+        dns.rdatatype.A: '192.168.1.102',
     },
     'google.com.': {
-        dns.rdatatype.A: '192.168.1.103'
+        dns.rdatatype.A: '192.168.1.103',
     },
     'legitsite.com.': {
-        dns.rdatatype.A: '192.168.1.104'
+        dns.rdatatype.A: '192.168.1.104',
     },
     'yahoo.com.': {
-        dns.rdatatype.A: '192.168.1.105'
+        dns.rdatatype.A: '192.168.1.105',
     },
     'nyu.edu.': {
         dns.rdatatype.A: '192.168.1.106',
-        # store encrypted secret data as a string (fits TXT)
-        dns.rdatatype.TXT: [encrypted_value.decode('utf-8')],
+        dns.rdatatype.TXT: (encrypted_value_str,),  # store encrypted package as a TXT string
         dns.rdatatype.MX: [(10, 'mxa-00256a01.gslb.pphosted.com.')],
         dns.rdatatype.AAAA: '2001:0db8:85a3:0000:0000:8a2e:0373:7312',
         dns.rdatatype.NS: 'ns1.nyu.edu.',
-    }
+    },
 }
 
 def run_dns_server():
-    # Create a UDP socket and bind it to the local IP address and standard DNS port 53
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP socket
-    # Bind to localhost (127.0.0.1) and port 53 (standard DNS port).
-    # NOTE: binding to port 53 may require root privileges on many systems.
-    server_socket.bind(('127.0.0.1', 53))
+    # Create a UDP socket and bind it to the local IP address and port 53 (standard DNS port)
+    # NOTE: binding to port 53 usually requires elevated privileges (sudo) on many systems.
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    bind_ip = '127.0.0.1'  # local testing IP (loopback)
+    bind_port = 5353  # standard DNS port; use a higher port if you don't run as root
+    try:
+        server_socket.bind((bind_ip, bind_port))
+    except PermissionError:
+        print(f"PermissionError: Cannot bind to port {bind_port}. Try running with elevated privileges or change bind_port to >1024 for testing.")
+        sys.exit(1)
+    except Exception as e:
+        print("Failed to bind socket:", e)
+        sys.exit(1)
+
+    print(f"DNS server listening on {bind_ip}:{bind_port} (UDP)")
 
     while True:
         try:
@@ -120,10 +135,16 @@ def run_dns_server():
             # Create a response message using the `dns.message.make_response` method
             response = dns.message.make_response(request)
 
-            # Get the question from the request
+            # Get the first question from the request
+            if len(request.question) == 0:
+                # no question - ignore
+                continue
             question = request.question[0]
             qname = question.name.to_text()
             qtype = question.rdtype
+
+            # Debug print
+            print("Received query from", addr, "for", qname, "type", qtype)
 
             # Check if there is a record in the `dns_records` dictionary that matches the question
             if qname in dns_records and qtype in dns_records[qname]:
@@ -133,39 +154,42 @@ def run_dns_server():
                 rdata_list = []
 
                 if qtype == dns.rdatatype.MX:
-                    # answer_data is a list of (preference, server)
+                    # answer_data is a list of (pref, server)
                     for pref, server in answer_data:
-                        # construct MX record via from_text for robustness
-                        rdata_list.append(dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.MX, f"{pref} {server}"))
+                        rdata_list.append(MX(dns.rdataclass.IN, dns.rdatatype.MX, pref, server))
                 elif qtype == dns.rdatatype.SOA:
-                    # answer_data is a tuple: (mname, rname, serial, refresh, retry, expire, minimum)
+                    # expected tuple: (mname, rname, serial, refresh, retry, expire, minimum)
                     mname, rname, serial, refresh, retry, expire, minimum = answer_data
-                    # construct SOA rdata using from_text
-                    soa_text = f"{mname} {rname} {serial} {refresh} {retry} {expire} {minimum}"
-                    rdata_list.append(dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.SOA, soa_text))
+                    rdata = SOA(dns.rdataclass.IN, dns.rdatatype.SOA, mname, rname, serial, refresh, retry, expire, minimum)
+                    rdata_list.append(rdata)
                 else:
-                    # For string answers or lists of strings
+                    # If answer_data is a single string (like an A record), or an iterable of strings (like TXT)
                     if isinstance(answer_data, str):
                         rdata_list = [dns.rdata.from_text(dns.rdataclass.IN, qtype, answer_data)]
                     else:
-                        # answer_data is a tuple/list of text strings (e.g., TXT entries)
+                        # assume iterable of items (TXT usually a tuple of strings)
                         rdata_list = [dns.rdata.from_text(dns.rdataclass.IN, qtype, data) for data in answer_data]
 
+                # Append RRsets and rdata to response
                 for rdata in rdata_list:
-                    response.answer.append(dns.rrset.RRset(question.name, dns.rdataclass.IN, qtype))
-                    response.answer[-1].add(rdata)
+                    rr = dns.rrset.RRset(question.name, dns.rdataclass.IN, qtype)
+                    rr.add(rdata)
+                    response.answer.append(rr)
 
-            # Set the Authoritative Answer (AA) bit (bit 10)
+            # Set the AA (Authoritative Answer) flag manually using bitwise ops
             response.flags |= 1 << 10
 
-            # Send the response back to the client using the `server_socket.sendto` method
-            print("Responding to request:", qname)
+            # Send response back
             server_socket.sendto(response.to_wire(), addr)
+            print("Responded to", addr, "for", qname)
+
         except KeyboardInterrupt:
             print('\nExiting...')
             server_socket.close()
             sys.exit(0)
-
+        except Exception as e:
+            print("Error handling request:", e)
+            # continue serving
 
 def run_dns_server_user():
     print("Input 'q' and hit 'enter' to quit")
@@ -183,8 +207,8 @@ def run_dns_server_user():
     input_thread.start()
     run_dns_server()
 
-
 if __name__ == '__main__':
     run_dns_server_user()
-    #print("Encrypted Value:", encrypted_value)
-    #print("Decrypted Value:", decrypted_value)
+    # For debug / local test:
+    # print("Encrypted Value (stored in nyu.edu TXT):", encrypted_value_str)
+    # print("Decrypted Value (check):", decrypt_with_aes(encrypted_value, password, salt))
