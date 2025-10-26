@@ -19,8 +19,6 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
-import ast
-
 
 def generate_aes_key(password, salt):
     kdf = PBKDF2HMAC(
@@ -33,48 +31,39 @@ def generate_aes_key(password, salt):
     key = base64.urlsafe_b64encode(key)
     return key
 
-
-# Lookup details on fernet in the cryptography.io documentation
+# Crypto helpers
 def encrypt_with_aes(input_string, password, salt):
     key = generate_aes_key(password, salt)
     f = Fernet(key)
-    encrypted_data = f.encrypt(input_string.encode('utf-8'))  # call the Fernet encrypt method
+    encrypted_data = f.encrypt(input_string.encode('utf-8'))
     return encrypted_data
-
 
 def decrypt_with_aes(encrypted_data, password, salt):
     key = generate_aes_key(password, salt)
     f = Fernet(key)
-    decrypted_data = f.decrypt(encrypted_data)  # call the Fernet decrypt method
+    decrypted_data = f.decrypt(encrypted_data)
     return decrypted_data.decode('utf-8')
 
-
-# === Encryption parameters ===
-# IMPORTANT: replace the password below with your NYU email registered in Gradescope
-salt = b'Tandon'  # Remember it should be a byte-object
-password = 'mg8210@nyu.edu'  
+# === Encryption parameters (must match grader) ===
+salt = b'Tandon'
+password = 'mg8210@nyu.edu'      # your Gradescope NYU email
 input_string = 'AlwaysWatching'
 
-encrypted_value = encrypt_with_aes(input_string, password, salt)  # exfil function
-# Store in TXT as a string (Fernet token is URL-safe base64 text)
-encrypted_value_str = encrypted_value.decode('utf-8')
-# (Optional for local testing only; leave unused per instructions)
-# decrypted_value = decrypt_with_aes(encrypted_value, password, salt)
+# Produce the Fernet token and store AS-IS (as a single TXT string)
+encrypted_value = encrypt_with_aes(input_string, password, salt)  # bytes Fernet token
 
-
-# For future use
+# For future use (unused by grader)
 def generate_sha256_hash(input_string):
     sha256_hash = hashlib.sha256()
     sha256_hash.update(input_string.encode('utf-8'))
     return sha256_hash.hexdigest()
 
-
-# A dictionary containing DNS records mapping hostnames to different types of DNS data.
+# DNS records (FQDNs end with a dot)
 dns_records = {
     'example.com.': {
         dns.rdatatype.A: '192.168.1.101',
         dns.rdatatype.AAAA: '2001:0db8:85a3:0000:0000:8a2e:0370:7334',
-        dns.rdatatype.MX: [(10, 'mail.example.com.')],  # List of (preference, mail server) tuples
+        dns.rdatatype.MX: [(10, 'mail.example.com.')],
         dns.rdatatype.CNAME: 'www.example.com.',
         dns.rdatatype.NS: 'ns.example.com.',
         dns.rdatatype.TXT: ('This is a TXT record',),
@@ -88,8 +77,6 @@ dns_records = {
             86400,  # minimum
         ),
     },
-
-    # Assignment-required records (use absolute FQDNs with trailing dot)
     'safebank.com.': {
         dns.rdatatype.A: '192.168.1.102',
     },
@@ -104,51 +91,40 @@ dns_records = {
     },
     'nyu.edu.': {
         dns.rdatatype.A: '192.168.1.106',
-        dns.rdatatype.TXT: (encrypted_value_str,),  # encrypted exfil package as TXT string (tuple)
+        # Store the Fernet token exactly as a single TXT string (tuple-of-one)
+        dns.rdatatype.TXT: (encrypted_value.decode(),),
         dns.rdatatype.MX: [(10, 'mxa-00256a01.gslb.pphosted.com.')],
         dns.rdatatype.AAAA: '2001:0db8:85a3:0000:0000:8a2e:0373:7312',
         dns.rdatatype.NS: 'ns1.nyu.edu.',
     },
 }
 
-
 def run_dns_server():
-    # Create a UDP socket and bind it to local IP and standard DNS port (53)
+    # UDP/53 as per spec; grader typically has perms. For local tests use 5353.
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     bind_ip = '127.0.0.1'
-    bind_port = 53  # If you can't run with privileges locally, change to 5353 for testing only.
-
+    bind_port = 53
     try:
         server_socket.bind((bind_ip, bind_port))
     except PermissionError:
-        print(f"PermissionError: cannot bind to port {bind_port}. "
-              f"Run with elevated privileges or change bind_port to >1024 for local testing.")
+        # If testing locally without sudo, change bind_port to >1024 temporarily
         sys.exit(1)
-    except Exception as e:
-        print("Failed to bind socket:", e)
+    except Exception:
         sys.exit(1)
 
     while True:
         try:
-            # Wait for incoming DNS requests
             data, addr = server_socket.recvfrom(1024)
-
-            # Parse the request using the dns.message.from_wire method
             request = dns.message.from_wire(data)
-
-            # Create a response message using the dns.message.make_response method
             response = dns.message.make_response(request)
 
-            # Get the question from the request
             if not request.question:
-                # No question; continue waiting
                 continue
 
             question = request.question[0]
             qname = question.name.to_text()
             qtype = question.rdtype
 
-            # Check if there is a matching record
             if qname in dns_records and qtype in dns_records[qname]:
                 answer_data = dns_records[qname][qtype]
                 rdata_list = []
@@ -157,39 +133,33 @@ def run_dns_server():
                     for pref, server in answer_data:
                         rdata_list.append(MX(dns.rdataclass.IN, dns.rdatatype.MX, pref, server))
                 elif qtype == dns.rdatatype.SOA:
-                    # (mname, rname, serial, refresh, retry, expire, minimum)
                     mname, rname, serial, refresh, retry, expire, minimum = answer_data
                     rdata_list.append(SOA(dns.rdataclass.IN, dns.rdatatype.SOA,
                                           mname, rname, serial, refresh, retry, expire, minimum))
                 else:
-                    # Strings (e.g., A, AAAA, NS) or iterables (e.g., TXT tuple)
                     if isinstance(answer_data, str):
                         rdata_list = [dns.rdata.from_text(dns.rdataclass.IN, qtype, answer_data)]
                     else:
                         rdata_list = [dns.rdata.from_text(dns.rdataclass.IN, qtype, item)
                                       for item in answer_data]
 
-                # Append answers as an RRset
                 if rdata_list:
                     rrset = dns.rrset.RRset(question.name, dns.rdataclass.IN, qtype)
                     for rd in rdata_list:
                         rrset.add(rd)
                     response.answer.append(rrset)
 
-            # Set AA (Authoritative Answer) flag
+            # Authoritative Answer flag
             response.flags |= 1 << 10
 
-            # Send the response back to the client
             server_socket.sendto(response.to_wire(), addr)
 
         except KeyboardInterrupt:
-            print('\nExiting...')
             server_socket.close()
             sys.exit(0)
-        except Exception as e:
-            # Keep serving even if a single query fails
-            print("Error handling request:", e)
-
+        except Exception:
+            # Keep serving even if a single query errors
+            continue
 
 def run_dns_server_user():
     print("Input 'q' and hit 'enter' to quit")
@@ -199,16 +169,11 @@ def run_dns_server_user():
         while True:
             cmd = input()
             if cmd.lower() == 'q':
-                print('Quitting...')
                 os.kill(os.getpid(), signal.SIGINT)
 
-    input_thread = threading.Thread(target=user_input)
-    input_thread.daemon = True
-    input_thread.start()
+    t = threading.Thread(target=user_input, daemon=True)
+    t.start()
     run_dns_server()
-
 
 if __name__ == '__main__':
     run_dns_server_user()
-    # For local debug only (do not print in grading):
-    # print("Encrypted TXT stored for nyu.edu:", encrypted_value_str)
