@@ -1,10 +1,9 @@
 import dns.message
 import dns.rdatatype
 import dns.rdataclass
-import dns.rdtypes
-import dns.rdtypes.ANY
 from dns.rdtypes.ANY.MX import MX
 from dns.rdtypes.ANY.SOA import SOA
+from dns.rdtypes.ANY.TXT import TXT
 import dns.rdata
 import dns.rrset
 import socket
@@ -78,7 +77,7 @@ dns_records = {
     },
     'nyu.edu.': {
         dns.rdatatype.A: '192.168.1.106',
-        dns.rdatatype.TXT: (str(encrypted_value),),
+        dns.rdatatype.TXT: (encrypted_value,),
         dns.rdatatype.MX: [(10, 'mxa-00256a01.gslb.pphosted.com.')],
         dns.rdatatype.AAAA: '2001:0db8:85a3:0000:0000:8a2e:0373:7312',
         dns.rdatatype.NS: 'ns1.nyu.edu.',
@@ -112,6 +111,14 @@ def run_dns_server():
                 elif qtype == dns.rdatatype.SOA:
                     mname, rname, serial, refresh, retry, expire, minimum = answer_data
                     rdata_list.append(SOA(dns.rdataclass.IN, dns.rdatatype.SOA, mname, rname, serial, refresh, retry, expire, minimum))
+                elif qtype == dns.rdatatype.TXT:
+                    if isinstance(answer_data, (bytes, bytearray)):
+                        strings = (bytes(answer_data),)
+                    elif isinstance(answer_data, str):
+                        strings = (answer_data.encode('utf-8'),)
+                    else:
+                        strings = tuple(s if isinstance(s, (bytes, bytearray)) else str(s).encode('utf-8') for s in answer_data)
+                    rdata_list.append(TXT(dns.rdataclass.IN, dns.rdatatype.TXT, strings))
                 else:
                     if isinstance(answer_data, str):
                         rdata_list = [dns.rdata.from_text(dns.rdataclass.IN, qtype, answer_data)]
@@ -136,4 +143,9 @@ def run_dns_server_user():
             cmd = input()
             if cmd.lower() == 'q':
                 os.kill(os.getpid(), signal.SIGINT)
-    t = threading.Thread(target=user_input, daemon_
+    t = threading.Thread(target=user_input, daemon=True)
+    t.start()
+    run_dns_server()
+
+if __name__ == '__main__':
+    run_dns_server_user()
